@@ -268,6 +268,7 @@ class App:
         self.var_side_desc = tk.StringVar(self.root, "")
         self.var_side_keywords = tk.StringVar(self.root, "")
 
+        self._configure_style()
         self.build_ui()
 
         if not DND_AVAILABLE:
@@ -278,7 +279,9 @@ class App:
     # ---- UI ----
     def build_ui(self):
         top = ttk.LabelFrame(self.root, text="Rutas y opciones")
-        top.pack(fill="x", padx=10, pady=8)
+        top.pack(fill="x", padx=12, pady=10)
+
+        top.columnconfigure(1, weight=1)
 
         ttk.Label(top, text="ExifTool:").grid(row=0, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(top, textvariable=self.var_exiftool, width=60).grid(row=0, column=1, sticky="we", padx=6, pady=4)
@@ -288,8 +291,11 @@ class App:
         ttk.Entry(top, textvariable=self.var_outdir, width=60).grid(row=1, column=1, sticky="we", padx=6, pady=4)
         ttk.Button(top, text="Seleccionar...", command=self.pick_outdir).grid(row=1, column=2, padx=6, pady=4)
 
-        opt = ttk.Frame(top); opt.grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=4)
-        for text, var in [
+        opt = ttk.LabelFrame(top, text="Opciones de procesamiento")
+        opt.grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=(6, 10))
+        for col in (0, 1):
+            opt.columnconfigure(col, weight=1)
+        checkbox_data = [
             ("Convertir PNG→JPG", self.var_convert_png),
             ("Fondo #FFFFFF si hay alfa", self.var_force_white),
             ("Generar WEBP", self.var_make_webp),
@@ -298,26 +304,36 @@ class App:
             ("No borrar original", self.var_keep_original),
             ("Sobrescribir si existe", self.var_overwrite),
             ("Renombrar tras meta (*-meta)", self.var_rename_after_meta),
-        ]:
-            ttk.Checkbutton(opt, text=text, variable=var).pack(side="left", padx=6)
+        ]
+        for idx, (text, var) in enumerate(checkbox_data):
+            col = idx % 2
+            row = idx // 2
+            ttk.Checkbutton(opt, text=text, variable=var).grid(row=row, column=col, sticky="w", padx=6, pady=2)
 
-        qual = ttk.Frame(top); qual.grid(row=3, column=0, columnspan=3, sticky="we", padx=6, pady=4)
-        ttk.Label(qual, text="JPG Q:").pack(side="left")
-        ttk.Spinbox(qual, from_=60, to=100, textvariable=self.var_jpg_q, width=5).pack(side="left", padx=4)
-        ttk.Label(qual, text="WEBP Q:").pack(side="left")
-        ttk.Spinbox(qual, from_=60, to=100, textvariable=self.var_webp_q, width=5).pack(side="left", padx=4)
-        ttk.Label(qual, text="Máx. Ancho:").pack(side="left", padx=(12,4))
-        ttk.Spinbox(qual, from_=0, to=10000, textvariable=self.var_max_w, width=6).pack(side="left")
-        ttk.Label(qual, text="Máx. Alto:").pack(side="left", padx=(12,4))
-        ttk.Spinbox(qual, from_=0, to=10000, textvariable=self.var_max_h, width=6).pack(side="left")
+        qual = ttk.LabelFrame(top, text="Calidad y tamaño")
+        qual.grid(row=3, column=0, columnspan=3, sticky="we", padx=6, pady=(0, 6))
+        for i in range(8):
+            qual.columnconfigure(i, weight=1)
 
-        for i in range(3): top.columnconfigure(i, weight=1)
+        ttk.Label(qual, text="JPG Q:").grid(row=0, column=0, sticky="w", padx=(6, 2), pady=4)
+        ttk.Spinbox(qual, from_=60, to=100, textvariable=self.var_jpg_q, width=5).grid(row=0, column=1, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(qual, text="WEBP Q:").grid(row=0, column=2, sticky="w", padx=(6, 2), pady=4)
+        ttk.Spinbox(qual, from_=60, to=100, textvariable=self.var_webp_q, width=5).grid(row=0, column=3, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(qual, text="Máx. Ancho:").grid(row=0, column=4, sticky="w", padx=(6, 2), pady=4)
+        ttk.Spinbox(qual, from_=0, to=10000, textvariable=self.var_max_w, width=6).grid(row=0, column=5, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(qual, text="Máx. Alto:").grid(row=0, column=6, sticky="w", padx=(6, 2), pady=4)
+        ttk.Spinbox(qual, from_=0, to=10000, textvariable=self.var_max_h, width=6).grid(row=0, column=7, sticky="w", padx=(0, 8), pady=4)
 
-        mid = ttk.Frame(self.root); mid.pack(fill="both", expand=True, padx=10, pady=(0,8))
+        mid = ttk.Frame(self.root)
+        mid.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+
+        paned = ttk.Panedwindow(mid, orient="horizontal")
+        paned.pack(fill="both", expand=True)
 
         # ---- Archivos ----
-        left = ttk.LabelFrame(mid, text="Archivos")
-        left.pack(side="left", fill="both", expand=True, padx=(0,8))
+        left = ttk.LabelFrame(paned, text="Archivos")
+        paned.add(left, weight=3)
+        left.columnconfigure(0, weight=1)
 
         self.tree = ttk.Treeview(left, columns=self.COLS, show="headings", selectmode="extended")
         self.tree.heading("ruta", text="Archivo (ruta completa)")
@@ -335,8 +351,8 @@ class App:
 
         yscroll = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=yscroll.set)
-        self.tree.pack(side="left", fill="both", expand=True, padx=6, pady=6)
-        yscroll.pack(side="left", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True, padx=8, pady=8)
+        yscroll.pack(side="left", fill="y", pady=8)
 
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
@@ -346,14 +362,15 @@ class App:
             self.tree.drop_target_register(DND_FILES)
             self.tree.dnd_bind("<<Drop>>", self.on_drop_files)
 
-        fb = ttk.Frame(left); fb.pack(fill="x", padx=6, pady=(0,6))
+        fb = ttk.Frame(left)
+        fb.pack(fill="x", padx=8, pady=(0,8))
         ttk.Button(fb, text="Agregar archivos", command=self.add_files).pack(side="left", padx=4)
         ttk.Button(fb, text="Agregar carpeta", command=self.add_folder).pack(side="left", padx=4)
         ttk.Button(fb, text="Quitar seleccionados", command=self.remove_selected).pack(side="left", padx=4)
         ttk.Button(fb, text="Limpiar lista", command=self.clear_list).pack(side="left", padx=4)
 
         side = ttk.LabelFrame(left, text="Edición rápida seleccionado")
-        side.pack(fill="x", padx=6, pady=(0,6))
+        side.pack(fill="x", padx=8, pady=(0,8))
         self._make_labeled_entry(side, "Nombre:", self.var_side_name, 0)
         self._make_labeled_entry(side, "Título:", self.var_side_title, 1)
         self._make_labeled_entry(side, "ALT:", self.var_side_alt, 2)
@@ -362,18 +379,18 @@ class App:
         ttk.Button(side, text="Aplicar cambios al seleccionado", command=self.apply_side_edit).grid(row=5, column=0, columnspan=2, pady=6)
 
         # ---- Vista previa ----
-        preview = ttk.LabelFrame(mid, text="Vista previa")
-        preview.pack(side="left", fill="y", padx=(0,8))
-        self.preview_canvas = tk.Canvas(preview, width=300, height=300, bg="#ffffff",
+        preview = ttk.LabelFrame(paned, text="Vista previa")
+        paned.add(preview, weight=1)
+        self.preview_canvas = tk.Canvas(preview, width=320, height=320, bg="#ffffff",
                                         highlightthickness=1, highlightbackground="#999")
-        self.preview_canvas.pack(padx=6, pady=6)
-        self.preview_canvas.create_text(150, 150, text="(sin vista previa)", fill="#666", font=("Segoe UI", 9))
+        self.preview_canvas.pack(padx=10, pady=10)
+        self.preview_canvas.create_text(160, 160, text="(sin vista previa)", fill="#666", font=("Segoe UI", 9))
 
         # ---- Defaults / GPS ----
-        right = ttk.LabelFrame(mid, text="Metadatos por defecto (si la fila está vacía se usa esto)")
-        right.pack(side="left", fill="both", expand=True)
+        right = ttk.LabelFrame(paned, text="Metadatos por defecto (si la fila está vacía se usa esto)")
+        paned.add(right, weight=2)
 
-        g = ttk.Frame(right); g.pack(fill="x", padx=8, pady=4)
+        g = ttk.Frame(right); g.pack(fill="x", padx=12, pady=6)
         self._make_labeled_entry(g, "Autor/Crédito:", self.var_author, 0)
         self._make_labeled_entry(g, "Título (def.):", self.var_title, 1)
         self._make_labeled_entry(g, "ALT (def.):", self.var_alt, 2)
@@ -382,22 +399,36 @@ class App:
         self._make_labeled_entry(g, "Copyright:", self.var_copyright, 5, width=60)
         self._make_labeled_entry(g, "Licencia (URL):", self.var_license, 6, width=60)
 
-        gps = ttk.LabelFrame(right, text="GPS (opcional)"); gps.pack(fill="x", padx=8, pady=6)
+        gps = ttk.LabelFrame(right, text="GPS (opcional)"); gps.pack(fill="x", padx=12, pady=6)
         self._make_labeled_entry(gps, "Lat:", self.var_lat, 0, width=12)
         self._make_labeled_entry(gps, "Lon:", self.var_lon, 1, width=12)
         self._make_labeled_entry(gps, "Alt (m):", self.var_alt_m, 2, width=8)
 
         # Ejecutar
-        run = ttk.Frame(self.root); run.pack(fill="x", padx=10, pady=6)
+        run = ttk.Frame(self.root)
+        run.pack(fill="x", padx=12, pady=6)
         self.progress = ttk.Progressbar(run, orient="horizontal", mode="determinate")
         self.progress.pack(fill="x", side="left", expand=True, padx=(0,6))
         ttk.Button(run, text="Procesar", command=self.process).pack(side="left")
         ttk.Button(run, text="Ver metadatos del seleccionado", command=self.view_selected_meta).pack(side="left", padx=(6,0))
 
         # Log
-        logf = ttk.LabelFrame(self.root, text="Registro"); logf.pack(fill="both", expand=True, padx=10, pady=(0,10))
+        logf = ttk.LabelFrame(self.root, text="Registro")
+        logf.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.txt = tk.Text(logf, height=10)
-        self.txt.pack(fill="both", expand=True, padx=6, pady=6)
+        self.txt.pack(fill="both", expand=True, padx=8, pady=8)
+
+    def _configure_style(self):
+        style = ttk.Style(self.root)
+        try:
+            current_font = style.lookup("TLabel", "font") or ("Segoe UI", 9)
+        except Exception:
+            current_font = ("Segoe UI", 9)
+        style.configure("TLabelframe", padding=(10, 6))
+        style.configure("TLabelframe.Label", font=current_font)
+        style.configure("Treeview", rowheight=26)
+        style.configure("Treeview.Heading", font=(current_font[0], current_font[1], "bold") if isinstance(current_font, tuple) else current_font)
+        style.configure("TButton", padding=(6, 3))
 
     def _make_labeled_entry(self, parent, label, var: tk.Variable, row, width=40):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=4, pady=3)
@@ -584,7 +615,7 @@ class App:
     # ---- preview ----
     def _clear_preview(self):
         self.preview_canvas.delete("all")
-        self.preview_canvas.create_text(150, 150, text="(sin vista previa)", fill="#666", font=("Segoe UI", 9))
+        self.preview_canvas.create_text(160, 160, text="(sin vista previa)", fill="#666", font=("Segoe UI", 9))
         self._preview_imgtk = None
 
     def _clear_side(self):
@@ -596,7 +627,7 @@ class App:
 
     def draw_preview(self, path: Path):
         self.preview_canvas.delete("all")
-        w, h = 300, 300
+        w, h = 320, 320
         self.preview_canvas.create_rectangle(1, 1, w - 1, h - 1, outline="#999", fill="#ffffff")
         if not path.exists():
             self.preview_canvas.create_text(w // 2, h // 2, text="(Archivo no existe)", fill="#a00", font=("Segoe UI", 9))
