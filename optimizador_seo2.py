@@ -1,16 +1,12 @@
 # -*- coding: utf-8 -*-
-# OPTIMIZADOR SEO – v3 FINAL
-# GUI: edición por archivo de metadatos + vista previa + hotfixes robustos
-# Autor: Armando (HardmanDog)
-# Fecha: 2025-10-20
-#
+# OPTIMIZADOR SEO – v4.1 STABLE (con Drag&Drop opcional)
 # Requisitos:
 #   python -m pip install pillow
-#   (opcional DnD) python -m pip install tkinterdnd2
-#   Instalar ExifTool y poner su ruta (ej. C:\Tools\exiftool.exe)
+#   (para arrastrar/soltar) python -m pip install tkinterdnd2
+#   Instalar ExifTool (ej.: C:\Tools\exiftool.exe)
 #
-# Empaquetar a .exe:
-#   pyinstaller --noconfirm --onefile --windowed --name "OPTIMIZADOR_SEO" optimizador_seo_v3_final.py
+# Ejecutar:  python optimizador_seo_v41.py
+# Empaquetar: pyinstaller --noconfirm --onefile --windowed --name OPTIMIZADOR_SEO optimizador_seo_v41.py
 
 import os
 import io
@@ -21,38 +17,36 @@ from typing import Optional, Tuple
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-# Drag & Drop opcional
+# ---- Drag&Drop opcional (no rompe si falta) ----
 DND_AVAILABLE = True
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES
 except Exception:
     DND_AVAILABLE = False
 
-# --- PIL con fallbacks seguros ---
 from PIL import Image, ImageTk, UnidentifiedImageError
 
-# Resampling fallback (para Pillow < 9.1)
+# Compat Pillow (<9.1)
 if hasattr(Image, "Resampling"):
     RESAMPLE = Image.Resampling.LANCZOS
 else:
-    RESAMPLE = Image.LANCZOS  # compatibilidad antigua
+    RESAMPLE = Image.LANCZOS
 
-# ImageCms opcional (muchos builds no traen LCMS)
+# ImageCms opcional
 HAS_CMS = True
 try:
     from PIL import ImageCms
 except Exception:
     HAS_CMS = False
 
-APP_TITLE = "OPTIMIZADOR SEO – v3 FINAL"
+APP_TITLE = "OPTIMIZADOR SEO – v4.1"
 SUPPORTED_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 DEFAULT_JPG_QUALITY = 86
 DEFAULT_WEBP_QUALITY = 82
 
 
-# ---------- utilidades de imagen ----------
+# ---------- utilidades imagen ----------
 def to_srgb(img: Image.Image) -> Image.Image:
-    """Convierte a sRGB si hay perfil ICC. Si no hay CMS, cae a .convert('RGB') sin reventar."""
     try:
         if img.mode == "CMYK":
             img = img.convert("RGB")
@@ -74,7 +68,6 @@ def to_srgb(img: Image.Image) -> Image.Image:
 
 
 def force_white_background_if_transparent(img: Image.Image) -> Image.Image:
-    """Si hay canal alfa, lo aplana sobre #FFFFFF."""
     if "A" in img.getbands():
         bg = Image.new("RGB", img.size, (255, 255, 255))
         bg.paste(img, mask=img.split()[-1])
@@ -85,7 +78,6 @@ def force_white_background_if_transparent(img: Image.Image) -> Image.Image:
 
 
 def resize_if_needed(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
-    """Reduce manteniendo aspecto si supera límites. No hace upscale."""
     if max_w <= 0 and max_h <= 0:
         return img
     w, h = img.size
@@ -100,7 +92,7 @@ def resize_if_needed(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
     return img
 
 
-# ---------- metadatos / exiftool ----------
+# ---------- exiftool ----------
 def run_exiftool(args_list):
     try:
         subprocess.run(args_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, shell=False)
@@ -109,7 +101,6 @@ def run_exiftool(args_list):
 
 
 def clean_all_metadata(exiftool_path: str, target_path: Path):
-    # Borra TODOS los metadatos (EXIF/XMP/IPTC)
     run_exiftool([exiftool_path, "-overwrite_original", "-all=", str(target_path)])
 
 
@@ -127,42 +118,28 @@ def write_metadata_full(
 ):
     args = [exiftool_path, "-overwrite_original"]
 
-    # Autor / Crédito
-    if author.strip():
-        args += [
-            f"-IPTC:Creator={author}", f"-IPTC:Credit={author}",
-            f"-XMP-dc:creator={author}",
-            f"-IFD0:Artist={author}", f"-EXIF:XPAuthor={author}",
-        ]
+    if author:
+        args += [f"-IPTC:Creator={author}", f"-IPTC:Credit={author}",
+                 f"-XMP-dc:creator={author}", f"-IFD0:Artist={author}", f"-EXIF:XPAuthor={author}"]
 
-    # Título
-    if title.strip():
+    if title:
         args += [f"-XMP:Title={title}", f"-IPTC:ObjectName={title}", f"-EXIF:XPTitle={title}"]
 
-    # Descripción
-    if desc.strip():
-        args += [
-            f"-XMP-dc:description={desc}", f"-XMP:Description={desc}",
-            f"-IPTC:Caption-Abstract={desc}", f"-EXIF:XPComment={desc}"
-        ]
+    if desc:
+        args += [f"-XMP-dc:description={desc}", f"-XMP:Description={desc}",
+                 f"-IPTC:Caption-Abstract={desc}", f"-EXIF:XPComment={desc}"]
 
-    # ALT (accesibilidad) — no estándar EXIF clásico, pero soportado en XMP moderno
-    if alt_text.strip():
+    if alt_text:
         args += [f"-XMP:AltTextAccessibility={alt_text}"]
 
-    # Copyright / Licencia
-    if copyright_note.strip():
-        args += [
-            f"-IPTC:CopyrightNotice={copyright_note}",
-            f"-XMP-dc:rights={copyright_note}",
-            f"-IFD0:Copyright={copyright_note}",
-        ]
-    if license_url.strip():
+    if copyright_note:
+        args += [f"-IPTC:CopyrightNotice={copyright_note}",
+                 f"-XMP-dc:rights={copyright_note}", f"-IFD0:Copyright={copyright_note}"]
+
+    if license_url:
         args += [f"-XMP-xmpRights:WebStatement={license_url}", f"-XMP:UsageTerms={license_url}"]
 
-    # Keywords
-    kw = [k.strip() for k in keywords_csv.split(",")] if keywords_csv else []
-    kw = [k for k in kw if k]
+    kw = [k.strip() for k in (keywords_csv or "").split(",") if k.strip()]
     if kw:
         for k in kw:
             args += [f"-IPTC:Keywords+={k}", f"-XMP-dc:subject+={k}"]
@@ -248,58 +225,57 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("1350x760")
+        self.root.geometry("1300x760")
         self.root.minsize(1200, 680)
 
-        # Vars generales
-        self.var_exiftool = tk.StringVar(value="exiftool" if os.name != "nt" else r"C:\Tools\exiftool.exe")
-        self.var_outdir = tk.StringVar(value=str(Path.cwd() / "salida"))
-        self.var_overwrite = tk.BooleanVar(value=True)
-        self.var_keep_original = tk.BooleanVar(value=True)
-        self.var_convert_png = tk.BooleanVar(value=True)
-        self.var_force_white = tk.BooleanVar(value=True)
-        self.var_make_webp = tk.BooleanVar(value=True)
-        self.var_clean_ai = tk.BooleanVar(value=True)
-        self.var_set_dpi96 = tk.BooleanVar(value=True)
-        self.var_rename_after_meta = tk.BooleanVar(value=True)
-        self.var_jpg_q = tk.IntVar(value=DEFAULT_JPG_QUALITY)
-        self.var_webp_q = tk.IntVar(value=DEFAULT_WEBP_QUALITY)
-        self.var_max_w = tk.IntVar(value=1600)
-        self.var_max_h = tk.IntVar(value=0)
+        # Variables
+        self.var_exiftool = tk.StringVar(self.root, r"C:\Tools\exiftool.exe" if os.name == "nt" else "exiftool")
+        self.var_outdir = tk.StringVar(self.root, str(Path.cwd() / "salida"))
 
-        # Metadatos por defecto (lote)
-        self.var_author = tk.StringVar(value="DecoTech Publicidad")
-        self.var_title = tk.StringVar(value="")
-        self.var_desc = tk.StringVar(value="")
-        self.var_copyright = tk.StringVar(value="© 2025 DecoTech Publicidad. Todos los derechos reservados.")
-        self.var_license = tk.StringVar(value="https://tudominio.com/licencias/uso-de-imagenes")
-        self.var_keywords = tk.StringVar(value="letreros, acrilico, oficina, lima")
-        self.var_alt = tk.StringVar(value="")  # ALT por defecto
+        self.var_overwrite = tk.BooleanVar(self.root, True)
+        self.var_keep_original = tk.BooleanVar(self.root, True)
+        self.var_convert_png = tk.BooleanVar(self.root, True)
+        self.var_force_white = tk.BooleanVar(self.root, True)
+        self.var_make_webp = tk.BooleanVar(self.root, True)
+        self.var_clean_ai = tk.BooleanVar(self.root, True)
+        self.var_set_dpi96 = tk.BooleanVar(self.root, True)
+        self.var_rename_after_meta = tk.BooleanVar(self.root, True)
 
-        # GPS
-        self.var_lat = tk.StringVar(value="")
-        self.var_lon = tk.StringVar(value="")
-        self.var_alt_m = tk.StringVar(value="")
+        self.var_jpg_q = tk.IntVar(self.root, DEFAULT_JPG_QUALITY)
+        self.var_webp_q = tk.IntVar(self.root, DEFAULT_WEBP_QUALITY)
+        self.var_max_w = tk.IntVar(self.root, 1600)
+        self.var_max_h = tk.IntVar(self.root, 0)
 
-        # Datos por fila
-        # row_data[iid] = {"final_name":..., "title":..., "alt":..., "desc":..., "keywords":...}
+        self.var_author = tk.StringVar(self.root, "DecoTech Publicidad")
+        self.var_title = tk.StringVar(self.root, "")
+        self.var_desc = tk.StringVar(self.root, "")
+        self.var_copyright = tk.StringVar(self.root, "© 2025 DecoTech Publicidad. Todos los derechos reservados.")
+        self.var_license = tk.StringVar(self.root, "https://tudominio.com/licencias/uso-de-imagenes")
+        self.var_keywords = tk.StringVar(self.root, "letreros, acrilico, oficina, lima")
+        self.var_alt = tk.StringVar(self.root, "")
+
+        self.var_lat = tk.StringVar(self.root, "")
+        self.var_lon = tk.StringVar(self.root, "")
+        self.var_alt_m = tk.StringVar(self.root, "")
+
         self.row_data = {}
-        self._edit_entry = None
-        self._popup = None
+        self._edit_entry: Optional[tk.Entry] = None
         self._preview_imgtk = None
 
-        # Panel lateral de edición rápida (bindeado a la selección)
-        self.var_side_name = tk.StringVar("")
-        self.var_side_title = tk.StringVar("")
-        self.var_side_alt = tk.StringVar("")
-        self.var_side_desc = tk.StringVar("")
-        self.var_side_keywords = tk.StringVar("")
+        self.var_side_name = tk.StringVar(self.root, "")
+        self.var_side_title = tk.StringVar(self.root, "")
+        self.var_side_alt = tk.StringVar(self.root, "")
+        self.var_side_desc = tk.StringVar(self.root, "")
+        self.var_side_keywords = tk.StringVar(self.root, "")
 
         self.build_ui()
-        if not DND_AVAILABLE:
-            self.log("Drag & Drop desactivado (instala 'tkinterdnd2' para habilitar).")
 
-    # ----- UI -----
+        if not DND_AVAILABLE:
+            self.log("Drag & Drop no disponible (instala 'tkinterdnd2').")
+        else:
+            self.log("Drag & Drop activo: arrastra archivos o carpetas a la lista.")
+
+    # ---- UI ----
     def build_ui(self):
         top = ttk.LabelFrame(self.root, text="Rutas y opciones")
         top.pack(fill="x", padx=10, pady=8)
@@ -339,7 +315,7 @@ class App:
 
         mid = ttk.Frame(self.root); mid.pack(fill="both", expand=True, padx=10, pady=(0,8))
 
-        # ---- Archivos (Treeview con columnas editables) ----
+        # ---- Archivos ----
         left = ttk.LabelFrame(mid, text="Archivos")
         left.pack(side="left", fill="both", expand=True, padx=(0,8))
 
@@ -364,19 +340,11 @@ class App:
 
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
-        self.tree.bind("<F2>", lambda e: self.edit_selected_popup())
 
-        self.ctx = tk.Menu(self.tree, tearoff=0)
-        self.ctx.add_command(label="Editar…", command=self.edit_selected_popup)
-        self.ctx.add_command(label="Renombrar nombre final…", command=lambda: self.edit_selected_popup(focus="final_name"))
-        self.tree.bind("<Button-3>", self.on_right_click)
-
+        # DnD en la tabla (si está disponible)
         if DND_AVAILABLE:
-            try:
-                self.tree.drop_target_register(DND_FILES)
-                self.tree.dnd_bind("<<Drop>>", self.on_drop_files)
-            except Exception:
-                pass  # si falla, seguimos sin DnD
+            self.tree.drop_target_register(DND_FILES)
+            self.tree.dnd_bind("<<Drop>>", self.on_drop_files)
 
         fb = ttk.Frame(left); fb.pack(fill="x", padx=6, pady=(0,6))
         ttk.Button(fb, text="Agregar archivos", command=self.add_files).pack(side="left", padx=4)
@@ -401,8 +369,8 @@ class App:
         self.preview_canvas.pack(padx=6, pady=6)
         self.preview_canvas.create_text(150, 150, text="(sin vista previa)", fill="#666", font=("Segoe UI", 9))
 
-        # ---- Metadatos por defecto / GPS ----
-        right = ttk.LabelFrame(mid, text="Metadatos por defecto (si una fila está vacía se toma de aquí)")
+        # ---- Defaults / GPS ----
+        right = ttk.LabelFrame(mid, text="Metadatos por defecto (si la fila está vacía se usa esto)")
         right.pack(side="left", fill="both", expand=True)
 
         g = ttk.Frame(right); g.pack(fill="x", padx=8, pady=4)
@@ -431,27 +399,28 @@ class App:
         self.txt = tk.Text(logf, height=10)
         self.txt.pack(fill="both", expand=True, padx=6, pady=6)
 
-    def _make_labeled_entry(self, parent, label, var, row, width=40):
+    def _make_labeled_entry(self, parent, label, var: tk.Variable, row, width=40):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=4, pady=3)
         ttk.Entry(parent, textvariable=var, width=width).grid(row=row, column=1, sticky="we", padx=4, pady=3)
         parent.columnconfigure(1, weight=1)
 
-    # ---- helpers UI ----
+    # ---- helpers ----
     def log(self, msg: str):
         self.txt.insert("end", msg + "\n")
         self.txt.see("end")
         self.root.update_idletasks()
 
     def pick_exiftool(self):
-        p = filedialog.askopenfilename(title="Selecciona exiftool.exe o exiftool",
-                                       filetypes=[("Ejecutable", "*.*")])
-        if p: self.var_exiftool.set(p)
+        p = filedialog.askopenfilename(title="Selecciona exiftool.exe o exiftool", filetypes=[("Ejecutable", "*.*")])
+        if p:
+            self.var_exiftool.set(p)
 
     def pick_outdir(self):
         d = filedialog.askdirectory(title="Selecciona carpeta de salida")
-        if d: self.var_outdir.set(d)
+        if d:
+            self.var_outdir.set(d)
 
-    # ---- archivos y datos por fila ----
+    # ---- manejo archivos ----
     def _add(self, p: Path):
         if not p.exists() or p.suffix.lower() not in SUPPORTED_EXT:
             return
@@ -467,17 +436,31 @@ class App:
     def add_files(self):
         paths = filedialog.askopenfilenames(title="Agregar imágenes",
             filetypes=[("Imágenes", "*.jpg;*.jpeg;*.png;*.tif;*.tiff;*.webp")])
-        for p in paths: self._add(Path(p))
+        for p in paths:
+            self._add(Path(p))
 
     def add_folder(self):
         d = filedialog.askdirectory(title="Agregar carpeta")
-        if not d: return
+        if not d:
+            return
         for p in Path(d).rglob("*"):
             if p.is_file() and p.suffix.lower() in SUPPORTED_EXT:
                 self._add(p)
 
+    # ---- DnD handler ----
     def on_drop_files(self, event):
-        for raw in self.root.splitlist(event.data):
+        # event.data viene tipo: '{C:\a b\file 1.jpg} {C:\x\y\img.png}' o líneas separadas
+        items = []
+        try:
+            items = self.root.splitlist(event.data)  # mejor si existe
+        except Exception:
+            # fallback básico
+            raw = event.data.strip()
+            if raw.startswith("{") and raw.endswith("}"):
+                raw = raw[1:-1]
+            items = [x.strip("{}") for x in raw.split()]
+
+        for raw in items:
             p = Path(raw)
             if p.is_dir():
                 for f in p.rglob("*"):
@@ -488,60 +471,66 @@ class App:
 
     def remove_selected(self):
         for iid in self.tree.selection():
-            try: del self.row_data[iid]
-            except KeyError: pass
+            try:
+                del self.row_data[iid]
+            except KeyError:
+                pass
             self.tree.delete(iid)
         if not self.tree.selection():
             self._clear_preview()
             self._clear_side()
 
     def clear_list(self):
-        for iid in self.tree.get_children(): self.tree.delete(iid)
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
         self.row_data.clear()
-        self._clear_preview(); self._clear_side()
+        self._clear_preview()
+        self._clear_side()
 
-    # ---- edición inline / popup / lateral ----
-    def on_right_click(self, event):
-        row = self.tree.identify_row(event.y)
-        if row:
-            if row not in self.tree.selection():
-                self.tree.selection_set(row)
-            self.ctx.tk_popup(event.x_root, event.y_root)
-
+    # ---- edición ----
     def on_tree_double_click(self, event):
         region = self.tree.identify("region", event.x, event.y)
-        if region != "cell": return
-        col = self.tree.identify_column(event.x)  # '#1'..'#6'
+        if region != "cell":
+            return
+        col = self.tree.identify_column(event.x)
         row = self.tree.identify_row(event.y)
-        if not row or col == "#1":  # no editamos 'ruta'
+        if not row or col == "#1":
             return
         try:
             x, y, w, h = self.tree.bbox(row, col)
         except Exception:
-            return self.edit_selected_popup()
+            return
 
-        col_key = self.COLS[int(col[1:]) - 1]
-        val_actual = self.tree.set(row, col_key)
+        col_idx = int(col[1:]) - 1
+        col_key = self.COLS[col_idx]
+        current = self.tree.set(row, col_key)
 
         if self._edit_entry is not None:
-            try: self._edit_entry.destroy()
-            except: pass
+            try:
+                self._edit_entry.destroy()
+            except Exception:
+                pass
+
         self._edit_entry = tk.Entry(self.tree)
-        self._edit_entry.insert(0, val_actual)
+        self._edit_entry.insert(0, current)
         self._edit_entry.select_range(0, tk.END)
         self._edit_entry.focus()
         self._edit_entry.place(x=x, y=y, width=w, height=h)
 
-        def commit(e=None):
-            nuevo = self._edit_entry.get().strip()
-            self._apply_cell_edit(row, col_key, nuevo)
-            try: self._edit_entry.destroy()
-            except: pass
+        def commit(_=None):
+            newv = self._edit_entry.get().strip()
+            self._apply_cell_edit(row, col_key, newv)
+            try:
+                self._edit_entry.destroy()
+            except Exception:
+                pass
             self._edit_entry = None
 
-        def cancel(e=None):
-            try: self._edit_entry.destroy()
-            except: pass
+        def cancel(_=None):
+            try:
+                self._edit_entry.destroy()
+            except Exception:
+                pass
             self._edit_entry = None
 
         self._edit_entry.bind("<Return>", commit)
@@ -549,65 +538,34 @@ class App:
         self._edit_entry.bind("<FocusOut>", commit)
 
     def _apply_cell_edit(self, iid: str, col_key: str, value: str):
-        # Sanitiza nombre final
+        d = self.row_data.get(iid, {})
         if col_key == "final_name":
-            v = value or self.row_data[iid]["final_name"]
+            v = value or d.get("final_name", "")
             v = v.replace("/", "-").replace("\\", "-")
-            if "." in v: v = v.rsplit(".", 1)[0]
-            self.row_data[iid]["final_name"] = v
+            if "." in v:
+                v = v.rsplit(".", 1)[0]
+            d["final_name"] = v
             self.tree.set(iid, "final_name", v)
             if iid in self.tree.selection():
                 self.var_side_name.set(v)
-            return
-        # Otras columnas
-        self.row_data[iid][col_key] = value
-        self.tree.set(iid, col_key, value)
-        if iid in self.tree.selection():
-            if col_key == "title": self.var_side_title.set(value)
-            elif col_key == "alt": self.var_side_alt.set(value)
-            elif col_key == "desc": self.var_side_desc.set(value)
-            elif col_key == "keywords": self.var_side_keywords.set(value)
-
-    def edit_selected_popup(self, focus=None):
-        sel = self.tree.selection()
-        if not sel: return
-        iid = sel[0]
-        data = self.row_data.get(iid, {})
-        win = tk.Toplevel(self.root); win.title("Editar metadatos"); win.transient(self.root); win.resizable(False, False); win.grab_set()
-
-        v_name = tk.StringVar(value=data.get("final_name",""))
-        v_title = tk.StringVar(value=data.get("title",""))
-        v_alt = tk.StringVar(value=data.get("alt",""))
-        v_desc = tk.StringVar(value=data.get("desc",""))
-        v_keys = tk.StringVar(value=data.get("keywords",""))
-
-        def mk(row, label, var, width=56):
-            ttk.Label(win, text=label).grid(row=row, column=0, sticky="e", padx=6, pady=4)
-            e = ttk.Entry(win, textvariable=var, width=width); e.grid(row=row, column=1, sticky="we", padx=6, pady=4); return e
-
-        e1 = mk(0,"Nombre final:", v_name, 40)
-        e2 = mk(1,"Título:", v_title)
-        e3 = mk(2,"ALT:", v_alt)
-        e4 = mk(3,"Descripción:", v_desc)
-        e5 = mk(4,"Keywords (,):", v_keys)
-
-        btnf = ttk.Frame(win); btnf.grid(row=5, column=0, columnspan=2, pady=8)
-        def ok():
-            self._apply_cell_edit(iid, "final_name", v_name.get().strip())
-            self._apply_cell_edit(iid, "title", v_title.get().strip())
-            self._apply_cell_edit(iid, "alt", v_alt.get().strip())
-            self._apply_cell_edit(iid, "desc", v_desc.get().strip())
-            self._apply_cell_edit(iid, "keywords", v_keys.get().strip())
-            win.destroy()
-        ttk.Button(btnf, text="Aceptar", command=ok).pack(side="left", padx=6)
-        ttk.Button(btnf, text="Cancelar", command=win.destroy).pack(side="left", padx=6)
-
-        if focus == "final_name": e1.focus_set()
-        else: e2.focus_set()
+        else:
+            d[col_key] = value
+            self.tree.set(iid, col_key, value)
+            if iid in self.tree.selection():
+                if col_key == "title":
+                    self.var_side_title.set(value)
+                elif col_key == "alt":
+                    self.var_side_alt.set(value)
+                elif col_key == "desc":
+                    self.var_side_desc.set(value)
+                elif col_key == "keywords":
+                    self.var_side_keywords.set(value)
+        self.row_data[iid] = d
 
     def apply_side_edit(self):
         sel = self.tree.selection()
-        if not sel: return
+        if not sel:
+            return
         iid = sel[0]
         self._apply_cell_edit(iid, "final_name", self.var_side_name.get().strip())
         self._apply_cell_edit(iid, "title", self.var_side_title.get().strip())
@@ -617,11 +575,11 @@ class App:
 
     def _sync_side_from_row(self, iid: str):
         d = self.row_data.get(iid, {})
-        self.var_side_name.set(d.get("final_name",""))
-        self.var_side_title.set(d.get("title",""))
-        self.var_side_alt.set(d.get("alt",""))
-        self.var_side_desc.set(d.get("desc",""))
-        self.var_side_keywords.set(d.get("keywords",""))
+        self.var_side_name.set(d.get("final_name", ""))
+        self.var_side_title.set(d.get("title", ""))
+        self.var_side_alt.set(d.get("alt", ""))
+        self.var_side_desc.set(d.get("desc", ""))
+        self.var_side_keywords.set(d.get("keywords", ""))
 
     # ---- preview ----
     def _clear_preview(self):
@@ -630,40 +588,56 @@ class App:
         self._preview_imgtk = None
 
     def _clear_side(self):
-        self.var_side_name.set(""); self.var_side_title.set(""); self.var_side_alt.set("")
-        self.var_side_desc.set(""); self.var_side_keywords.set("")
+        self.var_side_name.set("")
+        self.var_side_title.set("")
+        self.var_side_alt.set("")
+        self.var_side_desc.set("")
+        self.var_side_keywords.set("")
 
     def draw_preview(self, path: Path):
         self.preview_canvas.delete("all")
         w, h = 300, 300
         self.preview_canvas.create_rectangle(1, 1, w - 1, h - 1, outline="#999", fill="#ffffff")
         if not path.exists():
-            self.preview_canvas.create_text(w//2, h//2, text="(Archivo no existe)", fill="#a00", font=("Segoe UI", 9))
-            self._preview_imgtk = None; return
+            self.preview_canvas.create_text(w // 2, h // 2, text="(Archivo no existe)", fill="#a00", font=("Segoe UI", 9))
+            self._preview_imgtk = None
+            return
         try:
             img = Image.open(path)
             img = force_white_background_if_transparent(to_srgb(img))
             img.thumbnail((288, 288), RESAMPLE)
             self._preview_imgtk = ImageTk.PhotoImage(img)
-            x = (w - img.width) // 2; y = (h - img.height) // 2
+            x = (w - img.width) // 2
+            y = (h - img.height) // 2
             self.preview_canvas.create_image(x, y, image=self._preview_imgtk, anchor="nw")
         except Exception:
-            self.preview_canvas.create_text(w//2, h//2, text="(No se puede mostrar)", fill="#a00", font=("Segoe UI", 9))
+            self.preview_canvas.create_text(w // 2, h // 2, text="(No se puede mostrar)", fill="#a00", font=("Segoe UI", 9))
             self._preview_imgtk = None
 
-    def on_tree_select(self, event):
+    def on_tree_select(self, _event):
         sel = self.tree.selection()
         if not sel:
-            self._clear_preview(); self._clear_side(); return
+            self._clear_preview()
+            self._clear_side()
+            return
         iid = sel[0]
         self.draw_preview(Path(iid))
         self._sync_side_from_row(iid)
 
-    # ---- ver metadatos de la salida ----
+    # ---- metadatos / proceso ----
+    def _merge_defaults(self, d: dict) -> dict:
+        return {
+            "final_name": d.get("final_name", "").strip() or "",
+            "title": (d.get("title", "").strip() or self.var_title.get().strip()),
+            "alt": (d.get("alt", "").strip() or self.var_alt.get().strip()),
+            "desc": (d.get("desc", "").strip() or self.var_desc.get().strip()),
+            "keywords": (d.get("keywords", "").strip() or self.var_keywords.get().strip()),
+        }
+
     def view_selected_meta(self):
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Ver metadatos", "Selecciona un archivo (de salida) en la lista.")
+            messagebox.showinfo("Ver metadatos", "Selecciona una salida existente.")
             return
         iid = sel[0]
         outdir = Path(self.var_outdir.get().strip())
@@ -676,25 +650,16 @@ class App:
         info = show_metadata_in_log(self.var_exiftool.get().strip(), target)
         self.log("--- METADATOS ---\n" + info.strip() + "\n------------------")
 
-    # ---- proceso principal ----
-    def _merge_defaults(self, d: dict) -> dict:
-        # Si está vacío en la fila, cae al valor por defecto global
-        return {
-            "final_name": d.get("final_name","").strip() or "",
-            "title": (d.get("title","").strip() or self.var_title.get().strip()),
-            "alt": (d.get("alt","").strip() or self.var_alt.get().strip()),
-            "desc": (d.get("desc","").strip() or self.var_desc.get().strip()),
-            "keywords": (d.get("keywords","").strip() or self.var_keywords.get().strip()),
-        }
-
     def process(self):
         items = list(self.tree.get_children())
         if not items:
-            messagebox.showwarning("Atención", "Agrega imágenes primero."); return
+            messagebox.showwarning("Atención", "Agrega imágenes primero.")
+            return
 
         exiftool = self.var_exiftool.get().strip()
         if not exiftool:
-            messagebox.showwarning("Atención", "Indica la ruta de ExifTool."); return
+            messagebox.showwarning("Atención", "Indica la ruta de ExifTool.")
+            return
 
         outdir = Path(self.var_outdir.get().strip()); outdir.mkdir(parents=True, exist_ok=True)
 
@@ -724,7 +689,6 @@ class App:
                 merged = self._merge_defaults(self.row_data.get(iid, {}))
                 final_stem = merged["final_name"] or src.stem
 
-                # Guardar JPG maestro (+ reserva WEBP)
                 jpg_path, webp_path = save_master_files(
                     in_path=src, out_dir=outdir,
                     jpg_q=jpg_q, webp_q=webp_q,
@@ -735,7 +699,6 @@ class App:
                     final_stem=final_stem
                 )
 
-                # WEBP
                 webp_done = None
                 if make_webp:
                     try:
@@ -745,19 +708,16 @@ class App:
                     except Exception as e:
                         self.log(f"[{idx}/{total}] WEBP falló: {src.name} → {e}")
 
-                # Limpieza metadatos (huellas IA)
                 if clean_ai:
                     clean_all_metadata(exiftool, jpg_path)
                     if webp_done and webp_done.exists():
                         clean_all_metadata(exiftool, webp_done)
 
-                # DPI 96
                 if set_dpi96:
                     set_dpi_96(exiftool, jpg_path)
                     if webp_done and webp_done.exists():
                         set_dpi_96(exiftool, webp_done)
 
-                # Escribir metadatos finales (por-archivo OR defaults)
                 write_metadata_full(
                     exiftool, jpg_path,
                     author=author,
@@ -776,7 +736,6 @@ class App:
                         gps_lat=gps_lat, gps_lon=gps_lon, gps_alt=gps_alt
                     )
 
-                # Renombrar para refrescar caché de Windows
                 final_jpg = jpg_path
                 if rename_after_meta:
                     rn = jpg_path.with_name(jpg_path.stem + "-meta" + jpg_path.suffix)
@@ -786,7 +745,6 @@ class App:
                     except Exception as e:
                         self.log(f"[{idx}/{total}] Renombrado post-meta falló: {e}")
 
-                # Borrar original
                 if not keep_original:
                     try: src.unlink()
                     except Exception: pass
@@ -802,25 +760,18 @@ class App:
         self.log(f"--- Terminado. {ok} OK / {fail} errores. Salida: {outdir} ---")
         messagebox.showinfo("Listo", f"Procesado: {ok} OK, {fail} errores.")
 
-    # ---- selección ----
-    def on_tree_select(self, event):
-        sel = self.tree.selection()
-        if not sel:
-            self._clear_preview(); self._clear_side(); return
-        iid = sel[0]
-        self.draw_preview(Path(iid)); self._sync_side_from_row(iid)
+
+def make_root():
+    if DND_AVAILABLE:
+        try:
+            return TkinterDnD.Tk()
+        except Exception:
+            pass
+    return tk.Tk()
 
 
 def main():
-    # Raíz robusta: si TkinterDnD falla, cae a Tk normal
-    if DND_AVAILABLE:
-        try:
-            root = TkinterDnD.Tk()
-        except Exception:
-            root = tk.Tk()
-    else:
-        root = tk.Tk()
-
+    root = make_root()
     # Tema
     style = ttk.Style()
     try:
@@ -830,7 +781,6 @@ def main():
             style.theme_use(style.theme_names()[0])
     except Exception:
         pass
-
     App(root)
     root.mainloop()
 
@@ -839,7 +789,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # Muestra el error en popup para no perder el mensaje si se ejecuta por doble clic
         try:
             messagebox.showerror("Error al iniciar", f"{type(e).__name__}: {e}")
         except Exception:
