@@ -46,7 +46,10 @@ DEFAULT_WEBP_QUALITY = 82
 
 
 # ---------- utilidades imagen ----------
-def to_srgb(img: Image.Image) -> Image.Image:
+def to_srgb(img: Image.Image, preserve_alpha: bool = False) -> Image.Image:
+    alpha = None
+    if preserve_alpha and "A" in img.getbands():
+        alpha = img.getchannel("A")
     try:
         if img.mode == "CMYK":
             img = img.convert("RGB")
@@ -56,14 +59,21 @@ def to_srgb(img: Image.Image) -> Image.Image:
                 dst = ImageCms.createProfile("sRGB")
                 img = ImageCms.profileToProfile(img, src, dst, outputMode="RGB")
             except Exception:
-                if img.mode != "RGB":
+                if img.mode not in {"RGB", "RGBA"}:
                     img = img.convert("RGB")
         else:
-            if img.mode != "RGB":
+            if img.mode not in {"RGB", "RGBA"}:
                 img = img.convert("RGB")
     except Exception:
+        if img.mode not in {"RGB", "RGBA"}:
+            img = img.convert("RGB")
+
+    if preserve_alpha and alpha is not None:
         if img.mode != "RGB":
             img = img.convert("RGB")
+        img.putalpha(alpha)
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
     return img
 
 
@@ -187,35 +197,84 @@ def show_metadata_in_log(exiftool_path: str, target_path: Path) -> str:
 
 # ---------- guardado ----------
 def save_master_files(
-    in_path: Path, out_dir: Path,
-    jpg_q: int, webp_q: int,
+    in_path: Path,
+    out_dir: Path,
+    jpg_q: int,
+    webp_q: int,
     convert_png_to_jpg: bool,
     force_white_bg: bool,
-    max_w: int, max_h: int,
+    max_w: int,
+    max_h: int,
     overwrite: bool,
-    final_stem: Optional[str] = None
-) -> Tuple[Path, Path]:
+    make_webp: bool,
+    final_stem: Optional[str] = None,
+) -> Tuple[Path, Optional[Path]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = (final_stem or in_path.stem).strip() or in_path.stem
     ext = in_path.suffix.lower()
-    jpg_path = out_dir / f"{stem}.jpg"
-    webp_path = out_dir / f"{stem}.webp"
 
-    if (not overwrite) and jpg_path.exists():
-        raise RuntimeError(f"Ya existe: {jpg_path.name} (activa 'Sobrescribir' o usa otro nombre)")
+    # Determina formato de salida principal
+    wants_jpg = ext in {".jpg", ".jpeg"}
+    can_convert = ext in {".png", ".tif", ".tiff"}
+    primary_suffix = ".jpg" if wants_jpg or (can_convert and convert_png_to_jpg) else ext or ".jpg"
+    primary_path = out_dir / f"{stem}{primary_suffix}"
+
+    if (not overwrite) and primary_path.exists():
+        raise RuntimeError(
+            f"Ya existe: {primary_path.name} (activa 'Sobrescribir' o usa otro nombre)"
+        )
 
     try:
-        img = Image.open(in_path)
+        with Image.open(in_path) as original:
+            original.load()
+            img = original
+            has_alpha = "A" in img.getbands()
+            preserve_alpha = has_alpha and primary_suffix != ".jpg" and not force_white_bg
+
+            if primary_suffix == ".jpg":
+                if force_white_bg:
+                    img = force_white_background_if_transparent(img)
+                elif has_alpha:
+                    img = img.convert("RGB")
+                img = to_srgb(img)
+            else:
+                if force_white_bg and has_alpha:
+                    img = force_white_background_if_transparent(img)
+                    preserve_alpha = False
+                img = to_srgb(img, preserve_alpha=preserve_alpha)
+
+            img = resize_if_needed(img, max_w=max_w, max_h=max_h)
+
+            if primary_suffix == ".jpg":
+                img.save(primary_path, format="JPEG", quality=jpg_q, optimize=True, progressive=True)
+            elif primary_suffix in {".png", ".tif", ".tiff"}:
+                fmt = "PNG" if primary_suffix == ".png" else "TIFF"
+                save_kwargs = {"format": fmt}
+                if fmt == "PNG":
+                    save_kwargs.update({"optimize": True})
+                else:
+                    save_kwargs.update({"compression": "tiff_deflate"})
+                img.save(primary_path, **save_kwargs)
+            elif primary_suffix == ".webp":
+                img.save(primary_path, format="WEBP", quality=webp_q, method=6)
+            else:
+                img.save(primary_path)
+
+            webp_path: Optional[Path] = None
+            should_make_webp = make_webp and primary_suffix != ".webp"
+            if should_make_webp:
+                webp_path = out_dir / f"{stem}.webp"
+                if (not overwrite) and webp_path.exists():
+                    raise RuntimeError(
+                        f"Ya existe: {webp_path.name} (activa 'Sobrescribir' o usa otro nombre)"
+                    )
+                webp_img = img if img.mode in {"RGB", "RGBA"} else img.convert("RGB")
+                webp_img.save(webp_path, format="WEBP", quality=webp_q, method=6)
+
+            return primary_path, webp_path
     except UnidentifiedImageError:
         raise RuntimeError(f"No se pudo abrir: {in_path.name}")
 
-    if ext in {".png", ".tif", ".tiff"} and force_white_bg:
-        img = force_white_background_if_transparent(img)
-    img = to_srgb(img)
-    img = resize_if_needed(img, max_w=max_w, max_h=max_h)
-
-    img.save(jpg_path, format="JPEG", quality=jpg_q, optimize=True, progressive=True)
-    return jpg_path, webp_path
 
 
 # ---------- GUI ----------
@@ -720,37 +779,32 @@ class App:
                 merged = self._merge_defaults(self.row_data.get(iid, {}))
                 final_stem = merged["final_name"] or src.stem
 
-                jpg_path, webp_path = save_master_files(
-                    in_path=src, out_dir=outdir,
-                    jpg_q=jpg_q, webp_q=webp_q,
+                primary_path, webp_done = save_master_files(
+                    in_path=src,
+                    out_dir=outdir,
+                    jpg_q=jpg_q,
+                    webp_q=webp_q,
                     convert_png_to_jpg=convert_png,
                     force_white_bg=force_white,
-                    max_w=max_w, max_h=max_h,
+                    max_w=max_w,
+                    max_h=max_h,
                     overwrite=overwrite,
-                    final_stem=final_stem
+                    make_webp=make_webp,
+                    final_stem=final_stem,
                 )
 
-                webp_done = None
-                if make_webp:
-                    try:
-                        im = Image.open(jpg_path); im = to_srgb(im)
-                        im.save(webp_path, format="WEBP", quality=webp_q, method=6)
-                        webp_done = webp_path
-                    except Exception as e:
-                        self.log(f"[{idx}/{total}] WEBP falló: {src.name} → {e}")
-
                 if clean_ai:
-                    clean_all_metadata(exiftool, jpg_path)
+                    clean_all_metadata(exiftool, primary_path)
                     if webp_done and webp_done.exists():
                         clean_all_metadata(exiftool, webp_done)
 
                 if set_dpi96:
-                    set_dpi_96(exiftool, jpg_path)
+                    set_dpi_96(exiftool, primary_path)
                     if webp_done and webp_done.exists():
                         set_dpi_96(exiftool, webp_done)
 
                 write_metadata_full(
-                    exiftool, jpg_path,
+                    exiftool, primary_path,
                     author=author,
                     title=merged["title"], desc=merged["desc"],
                     copyright_note=copyright_note, license_url=license_url,
@@ -767,12 +821,12 @@ class App:
                         gps_lat=gps_lat, gps_lon=gps_lon, gps_alt=gps_alt
                     )
 
-                final_jpg = jpg_path
+                final_output = primary_path
                 if rename_after_meta:
-                    rn = jpg_path.with_name(jpg_path.stem + "-meta" + jpg_path.suffix)
+                    rn = primary_path.with_name(primary_path.stem + "-meta" + primary_path.suffix)
                     try:
                         if rn.exists(): rn.unlink()
-                        jpg_path.rename(rn); final_jpg = rn
+                        primary_path.rename(rn); final_output = rn
                     except Exception as e:
                         self.log(f"[{idx}/{total}] Renombrado post-meta falló: {e}")
 
@@ -781,7 +835,9 @@ class App:
                     except Exception: pass
 
                 ok += 1
-                self.log(f"[{idx}/{total}] OK: {src.name} → {final_jpg.name}{' + WEBP' if webp_done else ''}")
+                self.log(
+                    f"[{idx}/{total}] OK: {src.name} → {final_output.name}{' + WEBP' if webp_done else ''}"
+                )
             except Exception as e:
                 fail += 1
                 self.log(f"[{idx}/{total}] ERROR: {src.name} → {e}")
