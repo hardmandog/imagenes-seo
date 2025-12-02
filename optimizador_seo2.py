@@ -268,7 +268,11 @@ def save_master_files(
                     raise RuntimeError(
                         f"Ya existe: {webp_path.name} (activa 'Sobrescribir' o usa otro nombre)"
                     )
-                webp_img = img if img.mode in {"RGB", "RGBA"} else img.convert("RGB")
+                webp_img_base = img if img.mode in {"RGB", "RGBA"} else img.convert("RGB")
+                webp_img = webp_img_base.copy()
+                if webp_img.info:
+                    webp_img.info.pop("keep_original", None)
+                    webp_img.info.pop("keep", None)
                 webp_img.save(webp_path, format="WEBP", quality=webp_q, method=6)
 
             return primary_path, webp_path
