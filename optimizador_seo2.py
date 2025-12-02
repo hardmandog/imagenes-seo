@@ -302,7 +302,7 @@ class App:
         self.var_make_webp = tk.BooleanVar(self.root, True)
         self.var_clean_ai = tk.BooleanVar(self.root, True)
         self.var_set_dpi96 = tk.BooleanVar(self.root, True)
-        self.var_rename_after_meta = tk.BooleanVar(self.root, True)
+        self.var_rename_after_meta = tk.BooleanVar(self.root, False)
 
         self.var_jpg_q = tk.IntVar(self.root, DEFAULT_JPG_QUALITY)
         self.var_webp_q = tk.IntVar(self.root, DEFAULT_WEBP_QUALITY)
@@ -413,9 +413,11 @@ class App:
         self.tree.column("keywords", width=220, anchor="w")
 
         yscroll = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=yscroll.set)
-        self.tree.pack(side="left", fill="both", expand=True, padx=8, pady=8)
-        yscroll.pack(side="left", fill="y", pady=8)
+        xscroll = ttk.Scrollbar(left, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.tree.pack(side="left", fill="both", expand=True, padx=8, pady=(8, 0))
+        yscroll.pack(side="left", fill="y", pady=(8, 0))
+        xscroll.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
 
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
@@ -453,7 +455,25 @@ class App:
         right = ttk.LabelFrame(paned, text="Metadatos por defecto (si la fila está vacía se usa esto)")
         paned.add(right, weight=2)
 
-        g = ttk.Frame(right); g.pack(fill="x", padx=12, pady=6)
+        # Hacer scrolleable la columna derecha para resoluciones pequeñas
+        right_canvas = tk.Canvas(right, borderwidth=0, highlightthickness=0)
+        right_scroll = ttk.Scrollbar(right, orient="vertical", command=right_canvas.yview)
+        right_canvas.configure(yscrollcommand=right_scroll.set)
+        right_canvas.pack(side="left", fill="both", expand=True)
+        right_scroll.pack(side="right", fill="y")
+
+        form_holder = ttk.Frame(right_canvas)
+        holder_window = right_canvas.create_window((0, 0), window=form_holder, anchor="nw")
+
+        def _on_right_config(_event):
+            right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        form_holder.bind("<Configure>", _on_right_config)
+
+        def _sync_canvas_width(event):
+            right_canvas.itemconfigure(holder_window, width=event.width)
+        right_canvas.bind("<Configure>", _sync_canvas_width)
+
+        g = ttk.Frame(form_holder); g.pack(fill="x", padx=12, pady=6)
         self._make_labeled_entry(g, "Autor/Crédito:", self.var_author, 0)
         self._make_labeled_entry(g, "Título (def.):", self.var_title, 1)
         self._make_labeled_entry(g, "ALT (def.):", self.var_alt, 2)
@@ -462,7 +482,7 @@ class App:
         self._make_labeled_entry(g, "Copyright:", self.var_copyright, 5, width=60)
         self._make_labeled_entry(g, "Licencia (URL):", self.var_license, 6, width=60)
 
-        gps = ttk.LabelFrame(right, text="GPS (opcional)"); gps.pack(fill="x", padx=12, pady=6)
+        gps = ttk.LabelFrame(form_holder, text="GPS (opcional)"); gps.pack(fill="x", padx=12, pady=6)
         self._make_labeled_entry(gps, "Lat:", self.var_lat, 0, width=12)
         self._make_labeled_entry(gps, "Lon:", self.var_lon, 1, width=12)
         self._make_labeled_entry(gps, "Alt (m):", self.var_alt_m, 2, width=8)
