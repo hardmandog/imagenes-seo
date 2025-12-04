@@ -730,9 +730,9 @@ class App:
             return
         try:
             with Image.open(path) as opened:
-                preview_img = force_white_background_if_transparent(to_srgb(opened))
-                preview_img.thumbnail((288, 288), RESAMPLE)
-                preview_img = preview_img.copy()
+                preview_src = opened.copy()
+            preview_img = force_white_background_if_transparent(to_srgb(preview_src))
+            preview_img.thumbnail((288, 288), RESAMPLE)
             self._preview_imgtk = ImageTk.PhotoImage(preview_img)
             x = (w - preview_img.width) // 2
             y = (h - preview_img.height) // 2
