@@ -46,7 +46,10 @@ DEFAULT_WEBP_QUALITY = 82
 
 
 # ---------- utilidades imagen ----------
-def to_srgb(img: Image.Image) -> Image.Image:
+def to_srgb(img: Image.Image, preserve_alpha: bool = False) -> Image.Image:
+    alpha = None
+    if preserve_alpha and "A" in img.getbands():
+        alpha = img.getchannel("A")
     try:
         if img.mode == "CMYK":
             img = img.convert("RGB")
@@ -56,14 +59,21 @@ def to_srgb(img: Image.Image) -> Image.Image:
                 dst = ImageCms.createProfile("sRGB")
                 img = ImageCms.profileToProfile(img, src, dst, outputMode="RGB")
             except Exception:
-                if img.mode != "RGB":
+                if img.mode not in {"RGB", "RGBA"}:
                     img = img.convert("RGB")
         else:
-            if img.mode != "RGB":
+            if img.mode not in {"RGB", "RGBA"}:
                 img = img.convert("RGB")
     except Exception:
+        if img.mode not in {"RGB", "RGBA"}:
+            img = img.convert("RGB")
+
+    if preserve_alpha and alpha is not None:
         if img.mode != "RGB":
             img = img.convert("RGB")
+        img.putalpha(alpha)
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
     return img
 
 
@@ -95,7 +105,19 @@ def resize_if_needed(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
 # ---------- exiftool ----------
 def run_exiftool(args_list):
     try:
-        subprocess.run(args_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, shell=False)
+        result = subprocess.run(
+            args_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            shell=False,
+            text=True,
+            errors="ignore",
+        )
+        if result.returncode not in (0, None):
+            err = (result.stderr or "").strip()
+            if err:
+                print(f"EXIFTOOL WARNING: {err}")
     except Exception as e:
         print("EXIFTOOL ERROR:", e)
 
@@ -187,35 +209,88 @@ def show_metadata_in_log(exiftool_path: str, target_path: Path) -> str:
 
 # ---------- guardado ----------
 def save_master_files(
-    in_path: Path, out_dir: Path,
-    jpg_q: int, webp_q: int,
+    in_path: Path,
+    out_dir: Path,
+    jpg_q: int,
+    webp_q: int,
     convert_png_to_jpg: bool,
     force_white_bg: bool,
-    max_w: int, max_h: int,
+    max_w: int,
+    max_h: int,
     overwrite: bool,
-    final_stem: Optional[str] = None
-) -> Tuple[Path, Path]:
+    make_webp: bool,
+    final_stem: Optional[str] = None,
+) -> Tuple[Path, Optional[Path]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = (final_stem or in_path.stem).strip() or in_path.stem
     ext = in_path.suffix.lower()
-    jpg_path = out_dir / f"{stem}.jpg"
-    webp_path = out_dir / f"{stem}.webp"
 
-    if (not overwrite) and jpg_path.exists():
-        raise RuntimeError(f"Ya existe: {jpg_path.name} (activa 'Sobrescribir' o usa otro nombre)")
+    # Determina formato de salida principal
+    wants_jpg = ext in {".jpg", ".jpeg"}
+    can_convert = ext in {".png", ".tif", ".tiff"}
+    primary_suffix = ".jpg" if wants_jpg or (can_convert and convert_png_to_jpg) else ext or ".jpg"
+    primary_path = out_dir / f"{stem}{primary_suffix}"
+
+    if (not overwrite) and primary_path.exists():
+        raise RuntimeError(
+            f"Ya existe: {primary_path.name} (activa 'Sobrescribir' o usa otro nombre)"
+        )
 
     try:
-        img = Image.open(in_path)
+        with Image.open(in_path) as original:
+            original.load()
+            img = original
+            has_alpha = "A" in img.getbands()
+            preserve_alpha = has_alpha and primary_suffix != ".jpg" and not force_white_bg
+
+            if primary_suffix == ".jpg":
+                if force_white_bg:
+                    img = force_white_background_if_transparent(img)
+                elif has_alpha:
+                    img = img.convert("RGB")
+                img = to_srgb(img)
+            else:
+                if force_white_bg and has_alpha:
+                    img = force_white_background_if_transparent(img)
+                    preserve_alpha = False
+                img = to_srgb(img, preserve_alpha=preserve_alpha)
+
+            img = resize_if_needed(img, max_w=max_w, max_h=max_h)
+
+            if primary_suffix == ".jpg":
+                img.save(primary_path, format="JPEG", quality=jpg_q, optimize=True, progressive=True)
+            elif primary_suffix in {".png", ".tif", ".tiff"}:
+                fmt = "PNG" if primary_suffix == ".png" else "TIFF"
+                save_kwargs = {"format": fmt}
+                if fmt == "PNG":
+                    save_kwargs.update({"optimize": True})
+                else:
+                    save_kwargs.update({"compression": "tiff_deflate"})
+                img.save(primary_path, **save_kwargs)
+            elif primary_suffix == ".webp":
+                img.save(primary_path, format="WEBP", quality=webp_q, method=6)
+            else:
+                img.save(primary_path)
+
+            webp_path: Optional[Path] = None
+            should_make_webp = make_webp and primary_suffix != ".webp"
+            if should_make_webp:
+                webp_path = out_dir / f"{stem}.webp"
+                if (not overwrite) and webp_path.exists():
+                    raise RuntimeError(
+                        f"Ya existe: {webp_path.name} (activa 'Sobrescribir' o usa otro nombre)"
+                    )
+                webp_img_base = img if img.mode in {"RGB", "RGBA"} else img.convert("RGB")
+                webp_img = webp_img_base.copy()
+                if webp_img.info:
+                    webp_img.info.pop("keep_original", None)
+                    webp_img.info.pop("keep", None)
+                webp_img.save(webp_path, format="WEBP", quality=webp_q, method=6)
+
+            return primary_path, webp_path
     except UnidentifiedImageError:
         raise RuntimeError(f"No se pudo abrir: {in_path.name}")
 
-    if ext in {".png", ".tif", ".tiff"} and force_white_bg:
-        img = force_white_background_if_transparent(img)
-    img = to_srgb(img)
-    img = resize_if_needed(img, max_w=max_w, max_h=max_h)
-
-    img.save(jpg_path, format="JPEG", quality=jpg_q, optimize=True, progressive=True)
-    return jpg_path, webp_path
 
 
 # ---------- GUI ----------
@@ -239,7 +314,7 @@ class App:
         self.var_make_webp = tk.BooleanVar(self.root, True)
         self.var_clean_ai = tk.BooleanVar(self.root, True)
         self.var_set_dpi96 = tk.BooleanVar(self.root, True)
-        self.var_rename_after_meta = tk.BooleanVar(self.root, True)
+        self.var_rename_after_meta = tk.BooleanVar(self.root, False)
 
         self.var_jpg_q = tk.IntVar(self.root, DEFAULT_JPG_QUALITY)
         self.var_webp_q = tk.IntVar(self.root, DEFAULT_WEBP_QUALITY)
@@ -268,6 +343,7 @@ class App:
         self.var_side_desc = tk.StringVar(self.root, "")
         self.var_side_keywords = tk.StringVar(self.root, "")
 
+        self._configure_style()
         self.build_ui()
 
         if not DND_AVAILABLE:
@@ -278,7 +354,9 @@ class App:
     # ---- UI ----
     def build_ui(self):
         top = ttk.LabelFrame(self.root, text="Rutas y opciones")
-        top.pack(fill="x", padx=10, pady=8)
+        top.pack(fill="x", padx=12, pady=10)
+
+        top.columnconfigure(1, weight=1)
 
         ttk.Label(top, text="ExifTool:").grid(row=0, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(top, textvariable=self.var_exiftool, width=60).grid(row=0, column=1, sticky="we", padx=6, pady=4)
@@ -288,8 +366,11 @@ class App:
         ttk.Entry(top, textvariable=self.var_outdir, width=60).grid(row=1, column=1, sticky="we", padx=6, pady=4)
         ttk.Button(top, text="Seleccionar...", command=self.pick_outdir).grid(row=1, column=2, padx=6, pady=4)
 
-        opt = ttk.Frame(top); opt.grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=4)
-        for text, var in [
+        opt = ttk.LabelFrame(top, text="Opciones de procesamiento")
+        opt.grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=(6, 10))
+        for col in (0, 1):
+            opt.columnconfigure(col, weight=1)
+        checkbox_data = [
             ("Convertir PNG→JPG", self.var_convert_png),
             ("Fondo #FFFFFF si hay alfa", self.var_force_white),
             ("Generar WEBP", self.var_make_webp),
@@ -298,26 +379,36 @@ class App:
             ("No borrar original", self.var_keep_original),
             ("Sobrescribir si existe", self.var_overwrite),
             ("Renombrar tras meta (*-meta)", self.var_rename_after_meta),
-        ]:
-            ttk.Checkbutton(opt, text=text, variable=var).pack(side="left", padx=6)
+        ]
+        for idx, (text, var) in enumerate(checkbox_data):
+            col = idx % 2
+            row = idx // 2
+            ttk.Checkbutton(opt, text=text, variable=var).grid(row=row, column=col, sticky="w", padx=6, pady=2)
 
-        qual = ttk.Frame(top); qual.grid(row=3, column=0, columnspan=3, sticky="we", padx=6, pady=4)
-        ttk.Label(qual, text="JPG Q:").pack(side="left")
-        ttk.Spinbox(qual, from_=60, to=100, textvariable=self.var_jpg_q, width=5).pack(side="left", padx=4)
-        ttk.Label(qual, text="WEBP Q:").pack(side="left")
-        ttk.Spinbox(qual, from_=60, to=100, textvariable=self.var_webp_q, width=5).pack(side="left", padx=4)
-        ttk.Label(qual, text="Máx. Ancho:").pack(side="left", padx=(12,4))
-        ttk.Spinbox(qual, from_=0, to=10000, textvariable=self.var_max_w, width=6).pack(side="left")
-        ttk.Label(qual, text="Máx. Alto:").pack(side="left", padx=(12,4))
-        ttk.Spinbox(qual, from_=0, to=10000, textvariable=self.var_max_h, width=6).pack(side="left")
+        qual = ttk.LabelFrame(top, text="Calidad y tamaño")
+        qual.grid(row=3, column=0, columnspan=3, sticky="we", padx=6, pady=(0, 6))
+        for i in range(8):
+            qual.columnconfigure(i, weight=1)
 
-        for i in range(3): top.columnconfigure(i, weight=1)
+        ttk.Label(qual, text="JPG Q:").grid(row=0, column=0, sticky="w", padx=(6, 2), pady=4)
+        ttk.Spinbox(qual, from_=60, to=100, textvariable=self.var_jpg_q, width=5).grid(row=0, column=1, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(qual, text="WEBP Q:").grid(row=0, column=2, sticky="w", padx=(6, 2), pady=4)
+        ttk.Spinbox(qual, from_=60, to=100, textvariable=self.var_webp_q, width=5).grid(row=0, column=3, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(qual, text="Máx. Ancho:").grid(row=0, column=4, sticky="w", padx=(6, 2), pady=4)
+        ttk.Spinbox(qual, from_=0, to=10000, textvariable=self.var_max_w, width=6).grid(row=0, column=5, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(qual, text="Máx. Alto:").grid(row=0, column=6, sticky="w", padx=(6, 2), pady=4)
+        ttk.Spinbox(qual, from_=0, to=10000, textvariable=self.var_max_h, width=6).grid(row=0, column=7, sticky="w", padx=(0, 8), pady=4)
 
-        mid = ttk.Frame(self.root); mid.pack(fill="both", expand=True, padx=10, pady=(0,8))
+        mid = ttk.Frame(self.root)
+        mid.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+
+        paned = ttk.Panedwindow(mid, orient="horizontal")
+        paned.pack(fill="both", expand=True)
 
         # ---- Archivos ----
-        left = ttk.LabelFrame(mid, text="Archivos")
-        left.pack(side="left", fill="both", expand=True, padx=(0,8))
+        left = ttk.LabelFrame(paned, text="Archivos")
+        paned.add(left, weight=3)
+        left.columnconfigure(0, weight=1)
 
         self.tree = ttk.Treeview(left, columns=self.COLS, show="headings", selectmode="extended")
         self.tree.heading("ruta", text="Archivo (ruta completa)")
@@ -334,9 +425,11 @@ class App:
         self.tree.column("keywords", width=220, anchor="w")
 
         yscroll = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=yscroll.set)
-        self.tree.pack(side="left", fill="both", expand=True, padx=6, pady=6)
-        yscroll.pack(side="left", fill="y")
+        xscroll = ttk.Scrollbar(left, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.tree.pack(side="left", fill="both", expand=True, padx=8, pady=(8, 0))
+        yscroll.pack(side="left", fill="y", pady=(8, 0))
+        xscroll.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
 
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
@@ -346,14 +439,15 @@ class App:
             self.tree.drop_target_register(DND_FILES)
             self.tree.dnd_bind("<<Drop>>", self.on_drop_files)
 
-        fb = ttk.Frame(left); fb.pack(fill="x", padx=6, pady=(0,6))
+        fb = ttk.Frame(left)
+        fb.pack(fill="x", padx=8, pady=(0,8))
         ttk.Button(fb, text="Agregar archivos", command=self.add_files).pack(side="left", padx=4)
         ttk.Button(fb, text="Agregar carpeta", command=self.add_folder).pack(side="left", padx=4)
         ttk.Button(fb, text="Quitar seleccionados", command=self.remove_selected).pack(side="left", padx=4)
         ttk.Button(fb, text="Limpiar lista", command=self.clear_list).pack(side="left", padx=4)
 
         side = ttk.LabelFrame(left, text="Edición rápida seleccionado")
-        side.pack(fill="x", padx=6, pady=(0,6))
+        side.pack(fill="x", padx=8, pady=(0,8))
         self._make_labeled_entry(side, "Nombre:", self.var_side_name, 0)
         self._make_labeled_entry(side, "Título:", self.var_side_title, 1)
         self._make_labeled_entry(side, "ALT:", self.var_side_alt, 2)
@@ -362,18 +456,36 @@ class App:
         ttk.Button(side, text="Aplicar cambios al seleccionado", command=self.apply_side_edit).grid(row=5, column=0, columnspan=2, pady=6)
 
         # ---- Vista previa ----
-        preview = ttk.LabelFrame(mid, text="Vista previa")
-        preview.pack(side="left", fill="y", padx=(0,8))
-        self.preview_canvas = tk.Canvas(preview, width=300, height=300, bg="#ffffff",
+        preview = ttk.LabelFrame(paned, text="Vista previa")
+        paned.add(preview, weight=1)
+        self.preview_canvas = tk.Canvas(preview, width=320, height=320, bg="#ffffff",
                                         highlightthickness=1, highlightbackground="#999")
-        self.preview_canvas.pack(padx=6, pady=6)
-        self.preview_canvas.create_text(150, 150, text="(sin vista previa)", fill="#666", font=("Segoe UI", 9))
+        self.preview_canvas.pack(padx=10, pady=10)
+        self.preview_canvas.create_text(160, 160, text="(sin vista previa)", fill="#666", font=("Segoe UI", 9))
 
         # ---- Defaults / GPS ----
-        right = ttk.LabelFrame(mid, text="Metadatos por defecto (si la fila está vacía se usa esto)")
-        right.pack(side="left", fill="both", expand=True)
+        right = ttk.LabelFrame(paned, text="Metadatos por defecto (si la fila está vacía se usa esto)")
+        paned.add(right, weight=2)
 
-        g = ttk.Frame(right); g.pack(fill="x", padx=8, pady=4)
+        # Hacer scrolleable la columna derecha para resoluciones pequeñas
+        right_canvas = tk.Canvas(right, borderwidth=0, highlightthickness=0)
+        right_scroll = ttk.Scrollbar(right, orient="vertical", command=right_canvas.yview)
+        right_canvas.configure(yscrollcommand=right_scroll.set)
+        right_canvas.pack(side="left", fill="both", expand=True)
+        right_scroll.pack(side="right", fill="y")
+
+        form_holder = ttk.Frame(right_canvas)
+        holder_window = right_canvas.create_window((0, 0), window=form_holder, anchor="nw")
+
+        def _on_right_config(_event):
+            right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        form_holder.bind("<Configure>", _on_right_config)
+
+        def _sync_canvas_width(event):
+            right_canvas.itemconfigure(holder_window, width=event.width)
+        right_canvas.bind("<Configure>", _sync_canvas_width)
+
+        g = ttk.Frame(form_holder); g.pack(fill="x", padx=12, pady=6)
         self._make_labeled_entry(g, "Autor/Crédito:", self.var_author, 0)
         self._make_labeled_entry(g, "Título (def.):", self.var_title, 1)
         self._make_labeled_entry(g, "ALT (def.):", self.var_alt, 2)
@@ -382,22 +494,36 @@ class App:
         self._make_labeled_entry(g, "Copyright:", self.var_copyright, 5, width=60)
         self._make_labeled_entry(g, "Licencia (URL):", self.var_license, 6, width=60)
 
-        gps = ttk.LabelFrame(right, text="GPS (opcional)"); gps.pack(fill="x", padx=8, pady=6)
+        gps = ttk.LabelFrame(form_holder, text="GPS (opcional)"); gps.pack(fill="x", padx=12, pady=6)
         self._make_labeled_entry(gps, "Lat:", self.var_lat, 0, width=12)
         self._make_labeled_entry(gps, "Lon:", self.var_lon, 1, width=12)
         self._make_labeled_entry(gps, "Alt (m):", self.var_alt_m, 2, width=8)
 
         # Ejecutar
-        run = ttk.Frame(self.root); run.pack(fill="x", padx=10, pady=6)
+        run = ttk.Frame(self.root)
+        run.pack(fill="x", padx=12, pady=6)
         self.progress = ttk.Progressbar(run, orient="horizontal", mode="determinate")
         self.progress.pack(fill="x", side="left", expand=True, padx=(0,6))
         ttk.Button(run, text="Procesar", command=self.process).pack(side="left")
         ttk.Button(run, text="Ver metadatos del seleccionado", command=self.view_selected_meta).pack(side="left", padx=(6,0))
 
         # Log
-        logf = ttk.LabelFrame(self.root, text="Registro"); logf.pack(fill="both", expand=True, padx=10, pady=(0,10))
+        logf = ttk.LabelFrame(self.root, text="Registro")
+        logf.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.txt = tk.Text(logf, height=10)
-        self.txt.pack(fill="both", expand=True, padx=6, pady=6)
+        self.txt.pack(fill="both", expand=True, padx=8, pady=8)
+
+    def _configure_style(self):
+        style = ttk.Style(self.root)
+        try:
+            current_font = style.lookup("TLabel", "font") or ("Segoe UI", 9)
+        except Exception:
+            current_font = ("Segoe UI", 9)
+        style.configure("TLabelframe", padding=(10, 6))
+        style.configure("TLabelframe.Label", font=current_font)
+        style.configure("Treeview", rowheight=26)
+        style.configure("Treeview.Heading", font=(current_font[0], current_font[1], "bold") if isinstance(current_font, tuple) else current_font)
+        style.configure("TButton", padding=(6, 3))
 
     def _make_labeled_entry(self, parent, label, var: tk.Variable, row, width=40):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=4, pady=3)
@@ -584,7 +710,7 @@ class App:
     # ---- preview ----
     def _clear_preview(self):
         self.preview_canvas.delete("all")
-        self.preview_canvas.create_text(150, 150, text="(sin vista previa)", fill="#666", font=("Segoe UI", 9))
+        self.preview_canvas.create_text(160, 160, text="(sin vista previa)", fill="#666", font=("Segoe UI", 9))
         self._preview_imgtk = None
 
     def _clear_side(self):
@@ -596,19 +722,20 @@ class App:
 
     def draw_preview(self, path: Path):
         self.preview_canvas.delete("all")
-        w, h = 300, 300
+        w, h = 320, 320
         self.preview_canvas.create_rectangle(1, 1, w - 1, h - 1, outline="#999", fill="#ffffff")
         if not path.exists():
             self.preview_canvas.create_text(w // 2, h // 2, text="(Archivo no existe)", fill="#a00", font=("Segoe UI", 9))
             self._preview_imgtk = None
             return
         try:
-            img = Image.open(path)
-            img = force_white_background_if_transparent(to_srgb(img))
-            img.thumbnail((288, 288), RESAMPLE)
-            self._preview_imgtk = ImageTk.PhotoImage(img)
-            x = (w - img.width) // 2
-            y = (h - img.height) // 2
+            with Image.open(path) as opened:
+                preview_img = force_white_background_if_transparent(to_srgb(opened))
+                preview_img.thumbnail((288, 288), RESAMPLE)
+                preview_img = preview_img.copy()
+            self._preview_imgtk = ImageTk.PhotoImage(preview_img)
+            x = (w - preview_img.width) // 2
+            y = (h - preview_img.height) // 2
             self.preview_canvas.create_image(x, y, image=self._preview_imgtk, anchor="nw")
         except Exception:
             self.preview_canvas.create_text(w // 2, h // 2, text="(No se puede mostrar)", fill="#a00", font=("Segoe UI", 9))
@@ -689,37 +816,32 @@ class App:
                 merged = self._merge_defaults(self.row_data.get(iid, {}))
                 final_stem = merged["final_name"] or src.stem
 
-                jpg_path, webp_path = save_master_files(
-                    in_path=src, out_dir=outdir,
-                    jpg_q=jpg_q, webp_q=webp_q,
+                primary_path, webp_done = save_master_files(
+                    in_path=src,
+                    out_dir=outdir,
+                    jpg_q=jpg_q,
+                    webp_q=webp_q,
                     convert_png_to_jpg=convert_png,
                     force_white_bg=force_white,
-                    max_w=max_w, max_h=max_h,
+                    max_w=max_w,
+                    max_h=max_h,
                     overwrite=overwrite,
-                    final_stem=final_stem
+                    make_webp=make_webp,
+                    final_stem=final_stem,
                 )
 
-                webp_done = None
-                if make_webp:
-                    try:
-                        im = Image.open(jpg_path); im = to_srgb(im)
-                        im.save(webp_path, format="WEBP", quality=webp_q, method=6)
-                        webp_done = webp_path
-                    except Exception as e:
-                        self.log(f"[{idx}/{total}] WEBP falló: {src.name} → {e}")
-
                 if clean_ai:
-                    clean_all_metadata(exiftool, jpg_path)
+                    clean_all_metadata(exiftool, primary_path)
                     if webp_done and webp_done.exists():
                         clean_all_metadata(exiftool, webp_done)
 
                 if set_dpi96:
-                    set_dpi_96(exiftool, jpg_path)
+                    set_dpi_96(exiftool, primary_path)
                     if webp_done and webp_done.exists():
                         set_dpi_96(exiftool, webp_done)
 
                 write_metadata_full(
-                    exiftool, jpg_path,
+                    exiftool, primary_path,
                     author=author,
                     title=merged["title"], desc=merged["desc"],
                     copyright_note=copyright_note, license_url=license_url,
@@ -736,12 +858,12 @@ class App:
                         gps_lat=gps_lat, gps_lon=gps_lon, gps_alt=gps_alt
                     )
 
-                final_jpg = jpg_path
+                final_output = primary_path
                 if rename_after_meta:
-                    rn = jpg_path.with_name(jpg_path.stem + "-meta" + jpg_path.suffix)
+                    rn = primary_path.with_name(primary_path.stem + "-meta" + primary_path.suffix)
                     try:
                         if rn.exists(): rn.unlink()
-                        jpg_path.rename(rn); final_jpg = rn
+                        primary_path.rename(rn); final_output = rn
                     except Exception as e:
                         self.log(f"[{idx}/{total}] Renombrado post-meta falló: {e}")
 
@@ -750,7 +872,9 @@ class App:
                     except Exception: pass
 
                 ok += 1
-                self.log(f"[{idx}/{total}] OK: {src.name} → {final_jpg.name}{' + WEBP' if webp_done else ''}")
+                self.log(
+                    f"[{idx}/{total}] OK: {src.name} → {final_output.name}{' + WEBP' if webp_done else ''}"
+                )
             except Exception as e:
                 fail += 1
                 self.log(f"[{idx}/{total}] ERROR: {src.name} → {e}")
